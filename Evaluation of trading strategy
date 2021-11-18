@@ -1,0 +1,155 @@
+# import all the necessary packages
+
+!pip install yfinance
+import pandas as pd
+import statsmodels.formula.api as smf
+import numpy as np
+import matplotlib.pyplot as plt
+import yfinance as yf 
+from pandas.plotting import scatter_matrix
+%matplotlib inline
+
+
+# import all stock market data into DataFrame
+# REMINDER: TRY TO IMPORT FTSE100 from UK
+
+start_date = "2010-01-01"
+end_date = "2021-10-31"
+
+aord = yf.download("^AORD", start = start_date, end = end_date)
+nikkei = yf.download("^N225", start = start_date, end = end_date)
+hsi = yf.download("^HSI", start = start_date, end = end_date)
+daxi = yf.download("^GDAXI", start = start_date, end = end_date)
+cac40 = yf.download("^FCHI", start = start_date, end = end_date)
+sp500 = yf.download("^GSPC", start = start_date, end = end_date)
+dji = yf.download("^DJI", start = start_date, end = end_date)
+nasdaq = yf.download("^IXIC", start = start_date, end = end_date)
+spy = yf.download("SPY", start = start_date, end = end_date)
+
+nasdaq.tail()
+
+
+## Step 1: Data Munging
+
+# Due to the timezone issues, we extract and calculate appropriate stock market data for analysis
+# Indicepanel is the DataFrame of our trading model
+# ideally we want to use intraday price European Markets if we want to improve the model
+indicepanel=pd.DataFrame(index=spy.index)
+
+
+indicepanel['spy']=spy['Open'].shift(-1)-spy['Open']
+indicepanel['spy_lag1']=indicepanel['spy'].shift(1)
+indicepanel['sp500']=sp500["Open"]-sp500['Open'].shift(1)
+indicepanel['nasdaq']=nasdaq['Open']-nasdaq['Open'].shift(1)
+indicepanel['dji']=dji['Open']-dji['Open'].shift(1)
+
+indicepanel['cac40']=cac40['Open']-cac40['Open'].shift(1)
+indicepanel['daxi']=daxi['Open']-daxi['Open'].shift(1)
+
+indicepanel['aord']=aord['Close']-aord['Open']
+indicepanel['hsi']=hsi['Close']-hsi['Open']
+indicepanel['nikkei']=nikkei['Close']-nikkei['Open']
+indicepanel['Price']=spy['Open']
+
+print(indicepanel.head)
+
+# Lets check whether do we have NaN values in indicepanel
+indicepanel.isnull().sum()
+
+# We can use method 'fillna()' from dataframe to forward filling the Nan values
+# Then we can drop the reminding Nan values
+indicepanel = indicepanel.fillna(method='ffill')
+indicepanel = indicepanel.dropna()
+
+# Lets check whether do we have Nan values in indicepanel now
+indicepanel.isnull().sum()
+
+print(indicepanel.shape)
+
+#split the data into (1)train set and (2)test set
+
+Train = indicepanel.iloc[-2000:-1000, :]
+Test = indicepanel.iloc[-1000:, :]
+print(Train.shape, Test.shape)
+
+formula = 'spy~spy_lag1+sp500+nasdaq+dji+cac40+aord+daxi+nikkei+hsi'
+lm = smf.ols(formula=formula, data=Train).fit()
+
+Train['PredictedY'] = lm.predict(Train)
+Test['PredictedY'] = lm.predict(Test)
+
+
+# Profit of the signal based strategy
+
+# Train
+Train['Order'] = [1 if sig>0 else -1 for sig in Train['PredictedY']]
+Train['Profit'] = Train['spy'] * Train['Order']
+
+Train['Wealth'] = Train['Profit'].cumsum()
+print('Total profit made in Train: ', Train['Profit'].sum())
+
+plt.figure(figsize=(10, 10))
+plt.title('Performance of Strategy in Train')
+plt.plot(Train['Wealth'].values, color='green', label='Signal based strategy')
+plt.plot(Train['spy'].cumsum().values, color='red', label='Buy and Hold strategy')
+plt.legend()
+plt.show()
+
+# Test
+Test['Order'] = [1 if sig>0 else -1 for sig in Test['PredictedY']]
+Test['Profit'] = Test['spy'] * Test['Order']
+
+Test['Wealth'] = Test['Profit'].cumsum()
+print('Total profit made in Test: ', Test['Profit'].sum())
+
+plt.figure(figsize=(10, 10))
+plt.title('Performance of Strategy in Test')
+plt.plot(Test['Wealth'].values, color='green', label='Signal based strategy')
+plt.plot(Test['spy'].cumsum().values, color='red', label='Buy and Hold strategy')
+plt.legend()
+plt.show()
+
+
+# Evaluation of model - Practical Standard
+
+Train['Wealth'] = Train['Wealth'] + Train.loc[Train.index[0], 'Price']
+Test['Wealth'] = Test['Wealth'] + Test.loc[Test.index[0], 'Price']
+
+# Maximum Drawdown in Train data
+Train['Peak'] = Train['Wealth'].cummax()
+Train['Drawdown'] = (Train['Peak'] - Train['Wealth'])/Train['Peak']
+print('Maximum Drawdown in Train is ', Train['Drawdown'].max())
+
+# Maximum Drawdown in Test data
+Test['Peak'] = Test['Wealth'].cummax()
+Test['Drawdown'] = (Test['Peak'] - Test['Wealth'])/Test['Peak']
+print('Maximum Drawdown in Test is ', Test['Drawdown'].max())
+
+# Sharpe Ratio on Train data
+Train['Return'] = np.log(Train['Wealth']) - np.log(Train['Wealth'].shift(1))
+dailyr_train = Train['Return'].dropna()
+
+daily_sharpe_ratio_train = dailyr_train.mean()/dailyr_train.std(ddof=1)
+yearly_sharpe_ratio_train = (252**0.5)*daily_sharpe_ratio_train
+
+print('Daily Sharpe Ratio is ', daily_sharpe_ratio_train)
+print('Yearly Sharpe Ratio is ', yearly_sharpe_ratio_train)
+
+# Sharpe Ratio in Test data
+Test['Return'] = np.log(Test['Wealth']) - np.log(Test['Wealth'].shift(1))
+dailyr_test = Test['Return'].dropna()
+
+daily_sharpe_ratio_test = dailyr_test.mean()/dailyr_test.std(ddof=1)
+yearly_sharpe_ratio_test = (252**0.5)*daily_sharpe_ratio_test
+
+print('Daily Sharpe Ratio is ', daily_sharpe_ratio_test)
+print('Yearly Sharpe Ratio is ', yearly_sharpe_ratio_test)
+
+
+#Table of max. drawdown & sharpe ratio results
+results = {'Train Data':[yearly_sharpe_ratio_train, Train['Drawdown'].max()],
+        'Test Data':[yearly_sharpe_ratio_test, Test['Drawdown'].max()]}
+
+results_df = pd.DataFrame(results, index = ['Sharpe Ratio',
+                                            'Maximum Drawdown'])
+print (results_df)
